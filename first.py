@@ -24,6 +24,7 @@ FOV_LIGHT_WALLS = True
 TORCH_RADIUS = 10
 
 MAX_ROOM_MONSTERS = 3
+MAX_ROOM_ITEMS = 2
 
 game_state = 'playing'
 player_action = None
@@ -38,6 +39,15 @@ MSG_X = BAR_WIDTH + 2
 MSG_WIDTH = SCREEN_WIDTH - BAR_WIDTH - 2
 MSG_HEIGHT = PANEL_HEIGHT - 1
 
+INVENTORY_WIDTH = 50
+
+HEAL_AMOUNT = 4
+
+LIGHTNING_DAMAGE = 20
+LIGHTNING_RANGE = 5
+
+CONFUSE_NUM_TURNS = 10
+CONFUSE_RANGE = 5
  
 class Rect:
     #a rectangle on the map, used to charactize a room
@@ -65,7 +75,7 @@ class Tile:
 
 class Object:
     #this is a generic object: the player, a monster, an item, the stairs... it always represented by a character on screen
-    def __init__(self, x, y, char, name, color, blocks = False, fighter = None, ai = None):
+    def __init__(self, x, y, char, name, color, blocks = False, fighter = None, ai = None, item = None):
         self.x = x
         self.y = y
         self.char = char
@@ -73,11 +83,14 @@ class Object:
         self.name = name
         self.blocks = blocks
         self.fighter = fighter
+        self.item = item
         if self.fighter:
             self.fighter.owner = self
         self.ai = ai
         if self.ai:
             self.ai.owner = self
+        if self.item:
+            self.item.owner = self
 
     def move(self, dx, dy):
         if not is_blocked(self.x + dx, self.y + dy):
@@ -123,6 +136,13 @@ class Fighter:
         self.power = power
         self.death_function = death_function
 
+    def heal(self, amount):
+        #heal by given amount, without going over the maximum
+        self.hp += amount
+        if self.hp > self.max_hp:
+            self.hp = self.max_hp
+        
+
     def take_damage(self, damage):
         #apply damage to self
         if damage > 0:
@@ -158,8 +178,42 @@ class BasicMonster:
 
             #close enough, attack!
             elif player.fighter.hp > 0:
-                monster.fighter.attack(player)        
-        
+                monster.fighter.attack(player)
+
+class ConfusedMonster:
+    def __init__(self, old_ai, num_turns = CONFUSE_NUM_TURNS):
+        self.old_ai = old_ai
+        self.num_turns = num_turns
+    def take_turn(self):
+        if self.num_turns > 0:
+            #AI for confused monster
+            self.owner.move(libtcod.random_get_int(0, -1, 1), libtcod.random_get_int(0, -1, 1))
+            self.num_turns -= 1
+        else:
+            self.owner.ai = self.old_ai
+            message('The' + self.owner.name + ' is no longer confused', libtcod.red)        
+
+
+class Item:
+    def __init__(self, use_function = None):
+        self.use_function = use_function
+    def use(self):
+        #just call the use_function if it defined
+        if self.use_function is None:
+            message('The' + self.owner.name + ' cannot be used.')
+        else:
+            if self.use_function() != 'cancelled':
+                inventory.remove(self.owner) #destory after use, unless it was cancelled for some reason
+
+    #an item can be picked up and used
+    def pick_up(self):
+        #add to the player's inventory and remove from map
+        if len(inventory) >= 26:
+            message('Your inventory is full, cannot pick up' + self.owner.name + '.', libtcod.red)
+        else:
+            inventory.append(self.owner)
+            objects.remove(self.owner)
+            message('You picked up a ' + self.owner.name + '!', libtcod.green)        
 
 def get_name_under_mouse():
     global mouse
@@ -193,6 +247,19 @@ def handle_keys():
         elif key.vk == libtcod.KEY_RIGHT:
             player_move_or_attack(1,0)
         else:
+            #test for other keys
+            key_char = chr(key.c)
+            if key_char == 'g':
+                #pick up an item
+                for object in objects: #look for item in the player's tile
+                    if object.x == player.x and object.y == player.y and object.item:
+                        object.item.pick_up()
+                        break
+            if key_char == 'i':
+                #show the inventroy
+                chosen_item = inventory_menu('Press the key next to an item to use, or any other to cancel.\n') 
+                if chosen_item is not None:
+                    chosen_item.use()
             return 'didnt-take-turn'
     
 
@@ -202,7 +269,7 @@ def render_all():
         fov_recompute = False
         libtcod.map_compute_fov(fov_map, player.x, player.y, TORCH_RADIUS, FOV_LIGHT_WALLS, FOV_ALGO)
 
-       
+    #draw all the map(tile)   
     for y in range(MAP_HEIGHT):
         for x in range(MAP_WIDTH):
             wall = map[x][y].block_sight
@@ -268,8 +335,8 @@ def place_objects(room):
     num_monsters = libtcod.random_get_int(0, 0, MAX_ROOM_MONSTERS)
 
     for i in range(num_monsters):
-        x = libtcod.random_get_int(0, room.x1, room.x2)
-        y = libtcod.random_get_int(0, room.y1, room.y2)
+        x = libtcod.random_get_int(0, room.x1+1, room.x2-1)
+        y = libtcod.random_get_int(0, room.y1+1, room.y2-1)
         if not is_blocked(x, y):
             if libtcod.random_get_int(0, 0, 100) < 80:
                 fighter_component = Fighter(hp = 10, defense = 0, power = 3, death_function = monster_death)
@@ -281,10 +348,36 @@ def place_objects(room):
                 ai_component = BasicMonster()
                 monster = Object(x, y, 'T', 'troll', libtcod.darker_green, blocks = True, fighter = fighter_component, ai = ai_component)
             objects.append(monster)
+    
+    #choose random number of items
+    num_items = libtcod.random_get_int(0, 0, MAX_ROOM_ITEMS)
+    for i in range(num_items):
+        x = libtcod.random_get_int(0, room.x1+1, room.x2-1)
+        y = libtcod.random_get_int(0, room.y1+1, room.y2-1)
+        if not is_blocked(x, y):
+            
+            dice = libtcod.random_get_int(0, 0, 100)
+            if dice < 30:
+                #create a healing potion
+                item_component = Item(use_function = cast_heal)
+                item = Object(x, y, '!', 'healing potion', libtcod.violet, item  = item_component)
+            elif dice < 30 + 15:
+                #create a lightning bolt scroll
+                item_component = Item(use_function = cast_lightning)
+                item = Object(x, y, '!', 'scroll of lightning bolt', libtcod.light_yellow, item = item_component)
+            else:
+                #create a confused scroll
+                item_component = Item(use_function = cast_confuse)
+                item = Object(x, y, '!', 'scroll of confusion', libtcod.light_yellow, item = item_component)
+            objects.append(item)
+            item.send_to_back() #items appear below other objects
+                
 
 def is_blocked(x, y):
+    #block by tile
     if map[x][y].blocked:
         return True
+    #block by objects
     for object in objects:
         if object.fighter and object.x == x and object.y == y:
             return True
@@ -395,7 +488,93 @@ def message(new_msg, color = libtcod.white):
         #add the new line as tuple, with the text and color
         game_msgs.append((line, color))
 
+def menu(header, options, width):
+    if len(options) > 26: raise ValueError('Cannot have a menu with more than 26 options.')
+    #calculate the total height for the header and one line per option
+    header_height = libtcod.console_get_height_rect(con, 0, 0, width, SCREEN_HEIGHT, header)
+    height = len(options) + header_height
+    #create an off-screen console that represent the menu's window
+    window = libtcod.console_new(width, height)
+    #print the header, with auto-wrap
+    libtcod.console_set_default_foreground(window, libtcod.white)
+    libtcod.console_print_rect_ex(window, 0, 0, width, height, libtcod.BKGND_NONE, libtcod.LEFT, header)
+    #print all the option
+    y = header_height
+    letter_index = ord('a')
+    for option_text in options:
+        text = '(' + chr(letter_index) + ')' + option_text
+        libtcod.console_print_ex(window, 0, y, libtcod.BKGND_NONE, libtcod.LEFT, text)
+        y += 1
+        letter_index += 1
+    #blit the contents of 'window' to the root console
+    x = SCREEN_WIDTH / 2 - width / 2
+    y = SCREEN_HEIGHT / 2 - height / 2
+    libtcod.console_blit(window, 0, 0, width, height, 0, x, y, 1.0, 0.7)
+    #present the root console to the player and wait for a key press
+    libtcod.console_flush()
+    key = libtcod.console_wait_for_keypress(True)
+    #convert the ASCII code to an index; if it corresponds to an option, return it
+    index = key.c - ord('a')
+    if index >= 0 and index < len(options): return index
+    return None
 
+def inventory_menu(header):
+    #show a menu with each item of the inventory as an option
+    if len(inventory) == 0:
+        options = ['Inventory is empty.']
+    else:
+        options = [item.name for item in inventory]
+    index = menu(header, options, INVENTORY_WIDTH)
+    #if an item was chosen return it
+    if index is None or len(inventory) == 0: return None
+    return inventory[index].item
+    
+
+def cast_heal():
+    #heal the player
+    if player.fighter.hp == player.fighter.max_hp:
+        message('You are already at full health', libtcod.red)
+        return 'cancelled'
+    message('You wound start to fell better!', libtcod.light_violet)
+    player.fighter.heal(HEAL_AMOUNT)
+
+def cast_lightning():
+    #find close enemy and damage it
+    monster = closest_monster(LIGHTNING_RANGE)
+    if monster is None: #no enemy found with maximum range
+        message('No enemy is close enough to strike.', libtcod.red)
+        return 'cancelled'
+
+    #zap it!
+    message('A lighting bolt strikes the ' + monster.name + ' with a loud thunder! The damage is ' + str(LIGHTNING_DAMAGE) + ' hit points', libtcod.red)
+    monster.fighter.take_damage(LIGHTNING_DAMAGE)
+
+def closest_monster(max_range):
+    #find the closest enemy, up to max_range in the FOV
+    closest_enemy = None
+    closest_dist = max_range + 1 #start with (slightly more than) maximum range
+    for object in objects:
+        if object.fighter and not object == player and libtcod.map_is_in_fov(fov_map, object.x, object.y):
+        #calculate the distance between this object and the player
+            dist = player.distance_to(object)
+            if dist < closest_dist: #it's closer, remember it
+                closest_dist = dist
+                closest_enemy = object
+    return closest_enemy
+
+def cast_confuse():
+    #find closest enemy in range and confuse it
+    monster = closest_monster(CONFUSE_RANGE)
+    if monster is None: 
+        message('No enemy is close enough to confuse.', libtcod.red)
+        return 'cancelled'
+
+    old_ai = monster.ai
+    monster.ai = ConfusedMonster(old_ai)
+    monster.ai.owner = monster #tell the new component who owns it
+    message('The eyes of the ' + monster.name + ' look vacant, as he starts to stumble around', libtcod.light_green)
+        
+   
 #load the font to display
 libtcod.console_set_custom_font('arial10x10.png', libtcod.FONT_TYPE_GREYSCALE | libtcod.FONT_LAYOUT_TCOD)
 
@@ -416,6 +595,9 @@ fighter_component = Fighter(hp = 30, defense = 2, power = 5, death_function = pl
 player = Object(0, 0, '@', 'player', libtcod.white, blocks = True, fighter = fighter_component)
 objects = [player]
 make_map()
+
+#create a inventory to hold all the items
+inventory = []
 
 #fov: field of view
 fov_map = libtcod.map_new(MAP_WIDTH, MAP_HEIGHT)
