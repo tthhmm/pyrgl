@@ -49,6 +49,9 @@ LIGHTNING_RANGE = 5
 CONFUSE_NUM_TURNS = 10
 CONFUSE_RANGE = 5
  
+FIREBALL_RADIUS = 3
+FIREBALL_DAMAGE = 12
+
 class Rect:
     #a rectangle on the map, used to charactize a room
     def __init__(self, x, y, w, h):
@@ -120,6 +123,9 @@ class Object:
         dx = other.x - self.x
         dy = other.y - self.y
         return math.sqrt(dx ** 2 + dy ** 2)
+
+    def distance(self, x, y):
+        return math.sqrt((x - self.x) ** 2 + (y - self.y) ** 2)
 
     def send_to_back(self):
         #make this object be drawn first, so all others apprear above it if they're in the same tile
@@ -213,7 +219,15 @@ class Item:
         else:
             inventory.append(self.owner)
             objects.remove(self.owner)
-            message('You picked up a ' + self.owner.name + '!', libtcod.green)        
+            message('You picked up a ' + self.owner.name + '!', libtcod.green)
+
+    def drop(self):
+        #add to the map and remove from the player's inventory. also, place it at the player's coordinates
+        objects.append(self.owner)
+        inventory.remove(self.owner)
+        self.owner.x = player.x
+        self.owner.y = player.y
+        message('You dropped a ' + self.owner.name + '.', libtcod.yellow)        
 
 def get_name_under_mouse():
     global mouse
@@ -255,8 +269,13 @@ def handle_keys():
                     if object.x == player.x and object.y == player.y and object.item:
                         object.item.pick_up()
                         break
+            if key_char == 'd':
+                #show the inventory
+                chosen_item = inventory_menu('Press the key next to an item to drop, or any other to cancel.\n')
+                if chosen_item is not None:
+                    chosen_item.drop()
             if key_char == 'i':
-                #show the inventroy
+                #show the inventory
                 chosen_item = inventory_menu('Press the key next to an item to use, or any other to cancel.\n') 
                 if chosen_item is not None:
                     chosen_item.use()
@@ -361,10 +380,14 @@ def place_objects(room):
                 #create a healing potion
                 item_component = Item(use_function = cast_heal)
                 item = Object(x, y, '!', 'healing potion', libtcod.violet, item  = item_component)
-            elif dice < 30 + 15:
+            elif dice < 30 + 5:
                 #create a lightning bolt scroll
                 item_component = Item(use_function = cast_lightning)
                 item = Object(x, y, '!', 'scroll of lightning bolt', libtcod.light_yellow, item = item_component)
+            elif dice < 30 + 5 +30:
+                #create a fireball scroll
+                item_component = Item(use_function = cast_fireball)
+                item = Object(x, y, '!', 'scroll of fireball', libtcod.light_yellow, item = item_component)
             else:
                 #create a confused scroll
                 item_component = Item(use_function = cast_confuse)
@@ -401,7 +424,10 @@ def player_move_or_attack(dx, dy):
         fov_recompute = True
 
 def make_map():
-    global map, player, objects
+    global map, objects
+    #the list of objects with just the player
+    objects = [player]
+
     #fill map with unblocked tiles
     map = [[ Tile(True)
         for y in range(MAP_HEIGHT) ]
@@ -564,15 +590,130 @@ def closest_monster(max_range):
 
 def cast_confuse():
     #find closest enemy in range and confuse it
-    monster = closest_monster(CONFUSE_RANGE)
-    if monster is None: 
-        message('No enemy is close enough to confuse.', libtcod.red)
-        return 'cancelled'
+    message('Left-click an enemy to confuse it, or right-click to cancel.', libtcod.light_cyan)
+    monster = target_monster(CONFUSE_RANGE)
+    if monster is None: return 'canncelled'
 
     old_ai = monster.ai
     monster.ai = ConfusedMonster(old_ai)
     monster.ai.owner = monster #tell the new component who owns it
     message('The eyes of the ' + monster.name + ' look vacant, as he starts to stumble around', libtcod.light_green)
+
+def target_tile(max_range = None):
+    #return the position of a tile left-clicked in player's FOV (optionally in a range), or (None, None) if right-clicked.
+    global key, mouse
+    while True:
+        #render the screen. this erase the inventroy and shows the names of object under the mouse.
+        libtcod.console_flush()
+        libtcod.sys_check_for_event(libtcod.EVENT_KEY_PRESS|libtcod.EVENT_MOUSE, key, mouse)
+        render_all()
+        (x, y) = (mouse.cx, mouse.cy)
+        if (mouse.lbutton_pressed and libtcod.map_is_in_fov(fov_map, x, y) and (max_range is None or player.distance(x, y) <= max_range)):
+            return (x, y)
+        if mouse.rbutton_pressed or key.vk == libtcod.KEY_ESCAPE:
+            return (None, None)
+
+def cast_fireball():
+    #ask the player for a target tile for the fireball
+    message('Left-click a target tile for the fireball, or right-click to cancel.', libtcod.light_cyan)
+    (x, y) = target_tile()
+    if x is None: return 'cancelled'
+    message('The fireball explodes, burning everything within ' + str(FIREBALL_RADIUS) + ' tiles!', libtcod.orange)
+
+    for obj in objects:
+        if obj.distance(x, y) <= FIREBALL_RADIUS and obj.fighter:
+            message('The ' + obj.name + 'gets burned for ' + str(FIREBALL_DAMAGE) + ' hit points', libtcod.orange)
+            obj.fighter.take_damage(FIREBALL_DAMAGE)
+
+def target_monster(max_range = None):
+    while True:
+        (x, y) = target_tile(max_range)
+        if x is None: 
+            return None
+        for obj in objects:
+            if obj.x == x and obj.y == y:
+                return obj
+
+
+def new_game():
+    global player, inventory, game_msgs, game_state
+    #create object representing the player
+    fighter_component = Fighter(hp = 30, defense = 2, power = 5, death_function = player_death)
+    player = Object(0, 0, '@', 'player', libtcod.white, blocks = True, fighter = fighter_component)
+    
+    #create a map
+    make_map()
+    initialize_fov()
+
+    #create a inventory to hold all the items
+    inventory = []
+    
+    #create the list of game message and their colors, starts empty
+    game_msgs = []
+    
+    game_state = 'playing'
+
+    #a warm welcome message!
+    message('Welcome stranger! Prepare ot perish in the Tomb of the Ancient Kings.', libtcod.red)
+
+def initialize_fov():
+    global fov_recompute, fov_map
+    fov_recompute = True
+    #fov: field of view
+    fov_map = libtcod.map_new(MAP_WIDTH, MAP_HEIGHT)
+    for y in range(MAP_HEIGHT):
+        for x in range(MAP_WIDTH):
+            libtcod.map_set_properties(fov_map, x, y, not map[x][y].block_sight, not map[x][y].blocked)
+
+def play_game():
+    global key, mouse
+    #main game loop
+
+    #mouse and key
+    mouse = libtcod.Mouse()
+    key = libtcod.Key()
+
+    while not libtcod.console_is_window_closed():
+   
+        libtcod.sys_check_for_event(libtcod.EVENT_KEY_PRESS|libtcod.EVENT_MOUSE, key, mouse)
+    
+        render_all()
+        libtcod.console_flush()
+   
+        #erase all objects at their old location, before they move
+        for object in objects:
+            object.clear()
+        #handle keys and exit game if needed
+        player_action = handle_keys()
+        if player_action == 'exit':
+            break
+
+        if game_state == 'playing' and player_action != 'didnt-take-turn':
+            for object in objects:
+                if object.ai:
+                    object.ai.take_turn()
+
+def main_menu():
+    img = libtcod.image_load('menu_background.png')
+    while not libtcod.console_is_window_closed():
+        #show the background image, a twice the regular console resolution
+        libtcod.image_blit_2x(img, 0, 0, 0)
+        
+        #show the game's title, and some credits!
+        libtcod.console_set_default_foreground(0, libtcod.light_yellow)
+        libtcod.console_print_ex(0, SCREEN_WIDTH/2, SCREEN_HEIGHT/2-4, libtcod.BKGND_NONE, libtcod.CENTER, 'TOMBS OF THE ANCIENT KINGS')
+        libtcod.console_print_ex(0, SCREEN_WIDTH/2, SCREEN_HEIGHT-2, libtcod.BKGND_NONE, libtcod.CENTER, 'By Haiming')
+
+        #show options and wait for the player's choice
+        choice = menu('', ['Play a new game', 'Continue last game', 'Quit'], 24)
+        if choice == 0: #new game
+            new_game()
+            play_game()
+        elif choice == 2: #quit
+            break
+    
+    
+    
         
    
 #load the font to display
@@ -587,53 +728,14 @@ libtcod.sys_set_fps(LIMIT_FPS)
 #create another console
 con = libtcod.console_new(MAP_WIDTH, MAP_HEIGHT)
 
-#create the list of game message and their colors, starts empty
-game_msgs = []
-
-#create object representing the player
-fighter_component = Fighter(hp = 30, defense = 2, power = 5, death_function = player_death)
-player = Object(0, 0, '@', 'player', libtcod.white, blocks = True, fighter = fighter_component)
-objects = [player]
-make_map()
-
-#create a inventory to hold all the items
-inventory = []
-
-#fov: field of view
-fov_map = libtcod.map_new(MAP_WIDTH, MAP_HEIGHT)
-for y in range(MAP_HEIGHT):
-    for x in range(MAP_WIDTH):
-        libtcod.map_set_properties(fov_map, x, y, not map[x][y].block_sight, not map[x][y].blocked)
-fov_recompute = True
-
 panel = libtcod.console_new(SCREEN_WIDTH, PANEL_HEIGHT)
-#a warm welcome message!
-message('Welcome stranger! Prepare ot perish in the Tomb of the Ancient Kings.', libtcod.red)
-#main game loop
 
-#mouse and key
-mouse = libtcod.Mouse()
-key = libtcod.Key()
+main_menu()
 
-while not libtcod.console_is_window_closed():
-   
-    libtcod.sys_check_for_event(libtcod.EVENT_KEY_PRESS|libtcod.EVENT_MOUSE, key, mouse)
-    
-    render_all()
-    libtcod.console_flush()
-   
-    #handle keys and exit game if needed
-    for object in objects:
-        object.clear()
- 
-    player_action = handle_keys()
-    if player_action == 'exit':
-        break
 
-    if game_state == 'playing' and player_action != 'didnt-take-turn':
-        for object in objects:
-            if object.ai:
-                object.ai.take_turn()
+
+
+
 
     
 
