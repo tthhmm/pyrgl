@@ -29,13 +29,20 @@ tile_name_property_dict = {'floor':['.', libtcod.darker_red, False],
                                'wall':['#', libtcod.white, True], 
                                'grass':['.', libtcod.green, False], 
                                'tree':['T', libtcod.green, True],
-                               'water':['~', libtcod.blue, True]}
+                               'water':['~', libtcod.blue, True],
+                               'concrete_floor':['.', libtcod.light_blue, False],
+                               'concrete_wall':['#', libtcod.light_blue, True],
+                               'void':[' ', libtcod.black, True]}
 
 
 def main_menu():
     make_map()
+    make_home()
+    create_player()
+    create_monster()
     play_game()
 
+#main game loop
 def play_game():
     global key, mouse, game_state, game_msgs
     game_state = 'playing'
@@ -62,8 +69,32 @@ def play_game():
                 if object.ai:
                     object.ai.take_turn()
 
+def create_monster():
+    global objects
+    #put monster
+    count = 0
+    while count <= 10:
+        x = libtcod.random_get_int(0, 1, MAP_WIDTH - 1)
+        y = libtcod.random_get_int(0, 1, MAP_HEIGHT - 1)
+        if not is_blocked(x, y):
+            zombie_fighter = Fighter(10, 1, 0, death_function = monster_death)
+            zombie_ai = BasicMonster()
+            zombie = Object(x, y, 'z', 'Zombie', libtcod.white, blocks = True, fighter = zombie_fighter, ai = zombie_ai)
+            objects.append(zombie)
+            count += 1
+
+def create_player():
+    global player
+    #create a room
+    init_room = make_room()
+    (cx, cy) = init_room.center()
+    player_fighter = Fighter(20, 3, 0, death_function = player_death)
+    player = Object(cx, cy, '@', 'player', libtcod.white, fighter= player_fighter)
+    objects.append(player)
+
+#handle the input from keyboard and mouse
 def handle_keys():
-    global fov_recompute, game_state, player_action, key
+    global fov_recompute, game_state, player_action, key, map, objects, home, home_objects
 
     #function key
     #key = libtcod.console_check_for_keypress() #real-time
@@ -91,23 +122,23 @@ def handle_keys():
             player_move_or_attack(-1,1)
         elif key.vk == libtcod.KEY_PAGEDOWN or key.vk == libtcod.KEY_KP3:
             player_move_or_attack(1,1)
+        elif key.vk == libtcod.KEY_SPACE:
+            return 'wait a turn' 
         else:
+            #test for other keys
+            key_char = chr(key.c)
+            if key_char == 'h':
+                old_map = map
+                old_objects = objects
+                map = home
+                objects = home_objects
+                player.x = MAP_WIDTH/2
+                player.y = MAP_HEIGHT/2
             return 'didnt-take-turn'
 
-def player_move_or_attack(dx, dy):
-    global player
-    x = player.x + dx
-    y = player.y + dy
-    
-    target = None
-    for object in objects:
-        if object.fighter and x == object.x and y == object.y:
-            target = object
-            break
-    if target is not None:
-        player.fighter.attack_to(target) 
-    else:
-        player.move(dx, dy)
+####################################################################################################
+# Some sub functions
+####################################################################################################
 
 def is_blocked(x, y):
     #block by edge
@@ -127,7 +158,20 @@ def is_blocked(x, y):
 #######################################################################################################
 # Map build
 #######################################################################################################
-
+def make_home():
+    global home, home_objects
+    home = [[ Tile('void')
+        for y in range(MAP_HEIGHT) ]
+            for x in range(MAP_WIDTH)]
+    home_objects = []
+    #create a room
+    w = 16
+    h = 10
+    x = MAP_WIDTH/2 - w/2
+    y = MAP_HEIGHT/2 - h/2
+    new_room = Rect(x, y, w, h)
+    create_room(new_room, home, floor_name = 'concrete_floor', wall_name = 'concrete_wall', door = False)
+    
 
 def make_map(): #create a map with tiles
     global map, objects
@@ -143,21 +187,10 @@ def make_map(): #create a map with tiles
                 map[x][y].change_tile('tree')
             elif dice <= 20:
                 map[x][y].change_tile('grass')
-    #create a room
-    make_room()
+    
     #create a pool
     #make_pool()
-    #put monster
-    count = 0
-    while count <= 10:
-        x = libtcod.random_get_int(0, 1, MAP_WIDTH - 1)
-        y = libtcod.random_get_int(0, 1, MAP_HEIGHT - 1)
-        if not is_blocked(x, y):
-            zombie_fighter = Fighter(10, 1, 0)
-            zombie_ai = BasicMonster()
-            zombie = Object(x, y, 'z', 'Zombie', libtcod.white, blocks = True, fighter = zombie_fighter, ai = zombie_ai)
-            objects.append(zombie)
-            count += 1
+    
 
 class Tile:
     #a tile of the map and its properties
@@ -199,7 +232,8 @@ def make_room():
     x = libtcod.random_get_int(0, 0, MAP_WIDTH - w)
     y = libtcod.random_get_int(0, 0, MAP_HEIGHT - h)
     new_room = Rect(x, y, w, h)
-    create_room(new_room)
+    create_room(new_room, map)
+    return new_room
 
 def make_pool():
     w = libtcod.random_get_int(0, 10, 16)
@@ -216,32 +250,43 @@ def create_pool(room):
                 map[x][y].change_tile('water')
     
 
-def create_room(room):
-    global player
+def create_room(room, tile_map, floor_name = 'floor', wall_name = 'wall', door = True):
     #create room
     for x in range(room.x1, room.x2):
         for y in range(room.y1, room.y2):
-            map[x][y].change_tile('floor')
+            tile_map[x][y].change_tile(floor_name)
             if x == room.x1 or x == room.x2-1 or y == room.y1 or y == room.y2-1:
-                map[x][y].change_tile('wall')
-    (cx, cy) = room.center()
-    player_fighter = Fighter(20, 3, 0)
-    player = Object(cx, cy, '@', 'player', libtcod.white, fighter= player_fighter)
-    objects.append(player)
-    #create door
-    side = libtcod.random_get_int(0, 0, 3)
-    if side == 0:
-       map[libtcod.random_get_int(0, room.x1, room.x2-1)][room.y1].change_tile('floor')
-    elif side == 1:
-       map[libtcod.random_get_int(0, room.x1, room.x2-1)][room.y2-1].change_tile('floor')
-    elif side == 2:
-       map[room.x1][libtcod.random_get_int(0, room.y1, room.y2-1)].change_tile('floor')
-    elif side == 3:
-       map[room.x2-1][libtcod.random_get_int(0, room.y1, room.y2-1)].change_tile('floor')
+                tile_map[x][y].change_tile(wall_name)
+    if door:
+        #create door
+        side = libtcod.random_get_int(0, 0, 3)
+        if side == 0:
+           tile_map[libtcod.random_get_int(0, room.x1, room.x2-1)][room.y1].change_tile('floor')
+        elif side == 1:
+           tile_map[libtcod.random_get_int(0, room.x1, room.x2-1)][room.y2-1].change_tile('floor')
+        elif side == 2:
+           tile_map[room.x1][libtcod.random_get_int(0, room.y1, room.y2-1)].change_tile('floor')
+        elif side == 3:
+           tile_map[room.x2-1][libtcod.random_get_int(0, room.y1, room.y2-1)].change_tile('floor')
             
 ######################################################################################################################
 # Object build and its own component
-######################################################################################################################   
+######################################################################################################################
+def player_move_or_attack(dx, dy):
+    global player
+    x = player.x + dx
+    y = player.y + dy
+    
+    target = None
+    for object in objects:
+        if object.fighter and x == object.x and y == object.y:
+            target = object
+            break
+    if target is not None:
+        player.fighter.attack_to(target) 
+    else:
+        player.move(dx, dy)
+   
 class Fighter:
     def __init__(self, hp, attack, defense, xp = 0, death_function = None):
         self.max_hp = hp
@@ -348,6 +393,28 @@ class Object:
         objects.remove(self)
         objects.insert(0, self)
 
+def player_death(player):
+    #end game
+    global game_state
+    print 'You died!!!'
+    message('You died!!', libtcod.red)
+    game_state = 'dead'
+    #additional format
+    player.char = '%'
+    player.color = libtcod.dark_red
+
+def monster_death(monster):
+    #transformit into a nasty corpse! id doesn't block, can't be attack and doesn't move
+    #print monster.name.capitalize() + 'is dead!'
+    message(monster.name.capitalize() + 'is dead! You gain ' + str(monster.fighter.xp) + ' experience points', libtcod.orange)
+    monster.char = '%'
+    monster.color = libtcod.dark_red
+    monster.block = False
+    monster.fighter = None
+    monster.ai = None
+    monster.name = 'remains of ' + monster.name
+    monster.send_to_back()
+
 ####################################################################################################
 # Display
 ####################################################################################################
@@ -419,8 +486,9 @@ def render_bar(x, y, total_width, name, value, maximum, bar_color, back_color):
     libtcod.console_set_default_foreground(panel, libtcod.white)
     libtcod.console_print_ex(panel, x + total_width / 2, y, libtcod.BKGND_NONE, libtcod.CENTER, name + ': ' + str(value) + '/' + str(maximum))
 
-
+########################################################################################################################################
 #system initalize
+########################################################################################################################################
 #load the font to display in this game, could be further implement to the graphic tiles
 libtcod.console_set_custom_font('arial10x10.png', libtcod.FONT_TYPE_GREYSCALE | libtcod.FONT_LAYOUT_TCOD)
 
