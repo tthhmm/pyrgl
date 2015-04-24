@@ -4,25 +4,26 @@ import libtcodpy as libtcod #most important the libtcod libaray provide the cons
 import math
 import textwrap #using in menu part
 import shelve #for storing the the savedata
+import copy
 #from item import *
 
 #screen setting
-SCREEN_WIDTH = 60
-SCREEN_HEIGHT = 30
+SCREEN_WIDTH = 70
+SCREEN_HEIGHT = 40
 LIMIT_FPS = 20 #which could be used in the real-time combat system
 
-MAP_WIDTH = 80
-MAP_HEIGHT = 40
+MAP_WIDTH = 180
+MAP_HEIGHT = 140
 
 DISPLAY_WIDTH = 50
-DISPLAY_HEIGHT = 20
+DISPLAY_HEIGHT = 30
 
 #sizes and coordinates relevant for the GUI
 BAR_WIDTH = 10
 PANEL_HEIGHT = 10
 PANEL_Y = SCREEN_HEIGHT - PANEL_HEIGHT
 
-PANEL2_WIDTH = 10
+PANEL2_WIDTH = 20
 PANEL2_HEIGHT = SCREEN_HEIGHT - PANEL_HEIGHT
 PANEL2_X = SCREEN_WIDTH - PANEL2_WIDTH
 
@@ -52,6 +53,29 @@ tile_name_property_dict = {'floor':['.', libtcod.darker_red, False],
                                'concrete_wall':['#', libtcod.light_blue, True],
                                'void':[' ', libtcod.black, True]}
 
+career_skill_dict = {'soldior':{1:'hello'},
+                     'student':{1:'learn', 2:'study'}}
+
+career_passive_dict = {'soldior':{1:'gun skills'},
+                     'student':{1:'haha', 2:'hoho'}}
+
+def f_hello(sfrom):
+    message("I am so happy!")
+
+def f_shot(sfrom):
+    message("shot, shot, shot!!!!")
+
+def f_reload(sfrom):
+    message("reload the ammo")
+
+def f_learn(sfrom):
+    message("learning......")
+
+def f_study(sfrom):
+    message("good good study, day day up")
+    
+skills_dict = {'hello':f_hello, 'shot':f_shot, 'reload':f_reload, 'learn':f_learn, 'study':f_study}
+
 
 def main_menu():
     make_map()
@@ -69,6 +93,9 @@ def play_game():
     map_state = 'map'
     game_msgs = []
     inventory = []
+    equipment_component = Equipment(slot = 'right hand', add_equipment_skill = ('shot', 'reload'))
+    gun = Object(1, 1, '/', 'gun', libtcod.sky, equipment = equipment_component)
+    inventory.append(gun)
     # initialize the mouse and key with libtcod libaray
     mouse = libtcod.Mouse()
     key = libtcod.Key()
@@ -121,7 +148,7 @@ def create_player():
     #create a room
     init_room = make_room()
     (cx, cy) = init_room.center()
-    fighter_status = Status(2, 2, 2, 2)
+    fighter_status = Status('soldior', 2, 2, 2, 2)
     player_fighter = Fighter(20, 3, 0, status = fighter_status, death_function = player_death)
     player = Object(cx, cy, '@', 'player', libtcod.white, fighter= player_fighter)
     objects.append(player)
@@ -196,6 +223,8 @@ def handle_keys():
                     chosen_item.use()
             if key_char == 'a':
                 watch()
+            if key_char >= '0' and key_char <= '9':
+                use_skills(key_char)
             if key_char == 'c':
                  #show character information
                 msgbox('Charact Information\n\n' + 'Maximum HP: ' + str(player.fighter.max_hp) + \
@@ -262,6 +291,17 @@ def watch():
 def msgbox(text, width = 50):
     menu(text, [], width) #use menu() as a sort of "message box"
        
+def use_skills(key_num):
+    num = ord(key_num) - ord('0')
+    if num == 0: num = 10
+    if num > len(player.fighter.total_skills):
+        message('No skill in slot ' + str(num) + ' !')
+        return
+    skill_name = player.fighter.total_skills[num][0]
+    skill_from = player.fighter.total_skills[num][1]
+    cast_skill_function = skills_dict[skill_name]
+    if cast_skill_function is not None:
+        cast_skill_function(skill_from)
 
  
 #######################################################################################################
@@ -394,15 +434,31 @@ def create_room(room, tile_map, floor_name = 'floor', wall_name = 'wall', door =
 ###########
 #equipment
 ###########
+def get_equipped_in_slot(slot): #return the equipment in a slot, or None if it's empty
+    for obj in inventory:
+        if obj.equipment and obj.equipment.slot == slot and obj.equipment.is_equipped:
+            return obj.equipment
+    return None
+
+def get_all_equipped(obj): #return a list of equipped items
+    if obj == player:
+        equipped_list = []
+        for item in inventory:
+            if item.equipment and item.equipment.is_equipped:
+                equipped_list.append(item.equipment)
+        return equipped_list
+    else:
+        return []
 
 class Equipment:
     #object that can be equiped, yielding bonuses, automatically adds the Item component.
-    def __init__(self, slot, power_bonus = 0, defense_bouns = 0, max_hp_bouns = 0):
+    def __init__(self, slot, power_bonus = 0, defense_bouns = 0, max_hp_bouns = 0, add_equipment_skill = None):
         self.slot = slot
         self.is_equipped = False
         self.power_bouns = power_bonus
         self.defense_bouns = defense_bouns
         self.max_hp_bouns = max_hp_bouns
+        self.add_equipment_skill = add_equipment_skill
 
     def toggle_equip(self):
         if self.is_equipped:
@@ -418,12 +474,12 @@ class Equipment:
         #equip object and show message about it
         self.is_equipped = True
         message('Equipped ' + self.owner.name + ' on' + self.slot + '.', libtcod.light_green)
-
+        
     def dequip(self): 
         #dequip object and show message about it
         self.is_equipped = False
         message('Dequipped ' + self.owner.name + ' from' + self.slot + '.', libtcod.light_yellow)
-
+        
 ###########
 #item
 ###########
@@ -490,12 +546,49 @@ def player_move_or_attack(dx, dy):
     else:
         player.move(dx, dy)
 
+def init_skills(career):
+    skills = career_skill_dict[career]
+    l = len(skills)
+    for key in skills:
+        skills[key] = (skills[key], career)
+    return (skills, l)
+
+def init_passives(career):
+    passives = career_passive_dict[career]
+    n = len(passives)
+    return (passives, n)   
+    
 class Status:
-    def __init__(self, Str = 1, Con = 1, Dex = 1, Int = 1):
+    def __init__(self, career = None, Str = 1, Con = 1, Dex = 1, Int = 1):
         self.Str = Str
         self.Con = Con
         self.Dex = Dex
         self.Int = Int
+        self.skills = {}
+        self.passives = {}
+        self.skills_index = 0
+        self.passive_index = 0
+        if career is not None:
+            self.career = career
+            (self.skills, self.skills_index) = init_skills(career)
+            (self.passives, self.passives_index) = init_passives(career)
+            print career
+            print self.skills
+            print self.skills_index
+            print self.passives
+            print self.passives_index
+
+    def change_career(self, target_career):
+        self.career = target_career
+        (self.skills, self.skills_index) = (target_career)
+        (self.passives, self.passives_index) = init_passives(career)
+
+    
+                
+    
+    
+    
+    
    
 class Fighter:
     def __init__(self, hp, attack, defense, status = Status(), xp = 0, death_function = None):
@@ -505,7 +598,21 @@ class Fighter:
         self.defense = defense
         self.xp = xp
         self.death_function = death_function
-        self.status = status 
+        self.status = status
+    
+    @property
+    def total_skills(self):
+        
+        t_skills = copy.copy(self.status.skills)
+        
+        for equipment in get_all_equipped(self.owner):
+            if equipment.add_equipment_skill is not None:
+                for skill in equipment.add_equipment_skill:
+                    index = len(t_skills)
+                    index += 1
+                    t_skills[index] = [skill, equipment.owner.name]
+
+        return t_skills 
 
     def heal(self, val):
         self.hp += val
@@ -646,7 +753,22 @@ def panel2_display():
     con_s = 'Con:' + str(player.fighter.status.Con)
     dex_s = 'Dex:' + str(player.fighter.status.Dex)
     int_s = 'Int:' + str(player.fighter.status.Int)
-    panel2_msgs = [player.name, str_s, con_s, dex_s, int_s, ' ', 'skills']
+    car_s = player.fighter.status.career
+    panel2_msgs = [player.name, str_s, con_s, dex_s, int_s, ' ', 'career', car_s, ' ']
+    skill_msgs = ['Skills:']
+    #print skills
+    s = player.fighter.total_skills
+    for index in s:
+        skill_msgs.append(str(index) + ')' + s[index][0] + ' [' + s[index][1] + ']')
+
+    passive_msgs = ['','Passive:']
+    #print passive
+    for index in player.fighter.status.passives:
+        passive_msgs.append(player.fighter.status.passives[index])
+    
+    panel2_msgs.extend(skill_msgs)
+    panel2_msgs.extend(passive_msgs)
+    
     libtcod.console_set_default_background(panel2, libtcod.black)
     libtcod.console_clear(panel2)
     
